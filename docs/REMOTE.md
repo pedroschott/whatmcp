@@ -1,4 +1,4 @@
-# Reaching WhatMCP from outside your Mac
+# Remote access to WhatMCP
 
 By default WhatMCP speaks **stdio**: your AI client spawns it as a subprocess and
 nothing listens on a network. That is the most secure configuration and the right
@@ -13,12 +13,17 @@ leaking an API key.
 
 ---
 
+The HTTP server uses the same archive configuration as the CLI. For file-based
+setup on Windows or macOS, first follow [File import](IMPORT.md). The tunnel
+installation and service commands in sections 2 and 3 use macOS tools. The
+repository does not include a Windows service installer.
+
 ## Which path do you need?
 
 | you want | use | needs |
 |---|---|---|
 | Claude Code / Desktop | stdio (default) | nothing |
-| An agent on this Mac that needs a URL | HTTP on loopback | nothing |
+| An agent on the same computer that needs a URL | HTTP on loopback | nothing |
 | An agent elsewhere, occasional/testing | quick tunnel | nothing |
 | **ChatGPT** | **named tunnel + OAuth** | **a domain you control** |
 
@@ -38,7 +43,7 @@ npm run serve:http             # http://127.0.0.1:8787/mcp
 Call it with `Authorization: Bearer <token>`. This also serves the dashboard at
 `http://127.0.0.1:8787/`.
 
-## 2. Quick tunnel — a public URL in one command
+## 2. Quick tunnel on macOS
 
 ```bash
 brew install cloudflared
@@ -55,7 +60,7 @@ allowlist accepts the `.trycloudflare.com` suffix rather than an exact name —
 documented as the compromise it is in `src/mcp/http.ts`. Fine for testing;
 unusable for OAuth.
 
-## 3. Named tunnel — stable hostname, required for ChatGPT
+## 3. Named tunnel on macOS — stable hostname, required for ChatGPT
 
 You need a domain **on Cloudflare**. On a free plan the whole domain's
 nameservers must point at Cloudflare — delegating only a subdomain is an
@@ -178,6 +183,9 @@ covers AC power only; on battery you need `sudo pmset -b sleep 0`.
 ---
 
 ## Turning it off
+
+The uninstall script below removes the macOS services installed by this guide.
+For a manually started server, stop its process.
 
 ```bash
 bash deploy/uninstall.sh                       # stop server + tunnel

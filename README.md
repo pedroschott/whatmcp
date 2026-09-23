@@ -2,34 +2,48 @@
 
 A local MCP server over a local, durable archive of your WhatsApp history.
 
-```bash
-git clone https://github.com/pedroschott/whatmcp.git && cd whatmcp
+Requires **Node.js >= 22.6**. Install the project, then choose a source:
+
+```sh
+git clone https://github.com/pedroschott/whatmcp.git
+cd whatmcp
 npm install
-npm run setup     # checks permissions, takes your API key, builds and embeds the archive
 ```
 
-`setup` is interactive and explains each step before doing it, including what the
-one-time embedding will cost (cents, for a nine-year history). If anything is
-wrong with the machine it says exactly what to fix.
+| Source | Setup |
+|---|---|
+| WhatsApp Desktop on macOS | Sign in to WhatsApp Desktop, then run `npm run setup`. |
+| A compatible `ChatStorage.sqlite` file on Windows or macOS | Use the [file import commands](docs/IMPORT.md). |
+| An existing WhatMCP archive | Set `WHATMCP_STORE` to the archive path. See [archive configuration](docs/IMPORT.md#use-an-existing-archive). |
+
+To recover older messages from an iPhone backup, follow
+[Import iPhone history](docs/IPHONE.md), then use the prepared file as the source.
+
+Indexing, embedding, search, and the MCP servers use Node.js and SQLite. The
+source reader expects the WhatsApp Core Data schema. A file import does not
+require WhatsApp to be installed on the computer that runs WhatMCP.
+
+The guided setup, default source path, macOS checks in `doctor`, scheduled sync,
+and deployment scripts target macOS. On Windows, use the manual commands and an
+explicit source path. There is no source adapter for the Windows WhatsApp app.
+
+For macOS Desktop setup, `npm run setup` checks permissions, prompts for an API
+key, and builds the archive. It shows the estimated embedding cost before asking
+to proceed.
 
 <img width="653" height="381" alt="file-e6e5a56497e3ab9e15559e8d93e58d4c" src="https://github.com/user-attachments/assets/6ee373f8-84c0-4f94-b8ec-d1d5e52d2ec3" />
 
-
-Requires **macOS**, **Node >= 22.6**, and **WhatsApp Desktop signed in**.
-
-> **Full Disk Access is the one thing that trips everyone up.** WhatsApp's
-> database is protected by macOS privacy controls, and the permission belongs to
-> the app that *launches* WhatMCP — your terminal, or Claude Desktop — not to
-> node. `npm run setup` and `npm run doctor` both detect this and name the exact
-> app to grant it to. If a read fails, that is almost always why.
+> **macOS Full Disk Access:** grant access to the app that launches WhatMCP, such
+> as your terminal or MCP client. This is required to read the protected WhatsApp
+> Desktop database. `npm run setup` and `npm run doctor` check this access.
 
 Everything stays on this machine except one thing, stated up front: **text is sent
 to OpenAI to be embedded** — every conversation window once at index time, and
-every search query thereafter. The archive, the vectors, the index and the search
-itself never leave the Mac.
+each semantic search query thereafter. The archive, vectors, index, and search
+stay on the computer that runs WhatMCP.
 
 ```
-WhatsApp Desktop (macOS)
+WhatsApp Desktop (macOS) or a compatible database file
   ChatStorage.sqlite ──snapshot──> normalize ──> conversation windows ──> FTS5
                                                           │                 │
                                                           └──> OpenAI ──> vectors
@@ -123,6 +137,11 @@ put unrelated text near 0.75 cosine, `text-embedding-3-small` near 0.10.
 
 ## Setup
 
+Use [file import](docs/IMPORT.md) for a database file on Windows or macOS.
+Use the guided setup below for the live macOS WhatsApp Desktop database.
+
+### macOS Desktop setup
+
 ```bash
 npm run setup
 ```
@@ -150,7 +169,7 @@ Check it works before wiring up a client:
 npm run wa -- search "something you talked about"
 ```
 
-### Keeping it current
+### Scheduled sync on macOS
 
 WhatsApp prunes its own local database, so anything it drops before your next
 sync is gone for good — `npm run setup` therefore installs a background sync
@@ -167,7 +186,9 @@ tail -f ~/.whatmcp/logs/sync.log
 
 ### Backing it up
 
-The archive is a single SQLite file. Copy it:
+Stop archive writers before backing up. If SQLite WAL files are present, use
+SQLite's backup API to make a consistent copy. For a closed archive with no
+pending WAL data, copy `archive.db`. For example, on macOS:
 
 ```bash
 cp ~/.whatmcp/archive.db ~/wherever/
@@ -176,6 +197,10 @@ cp ~/.whatmcp/archive.db ~/wherever/
 It is worth doing. After a while it holds messages WhatsApp itself no longer has.
 
 ## Connecting
+
+Configure the client to launch `node` with the server path in your checkout.
+On Windows, use an absolute Windows path; escape backslashes as `\\` in JSON.
+The shell and Claude Desktop configuration path below are macOS examples.
 
 **Claude Code**
 
@@ -264,7 +289,7 @@ put `<script>` in your archive. The page never assigns data to `innerHTML`; all
 content goes in through `textContent`, and a strict CSP blocks external loads
 entirely. Run it with `WHATMCP_NO_DASHBOARD=1` to disable it outright.
 
-#### Reaching it from off this Mac
+#### Remote deployment on macOS
 
 Do **not** simply bind `0.0.0.0`. This server does not terminate TLS, so traffic
 would carry the bearer token and every message it returns in cleartext, readable
@@ -299,6 +324,9 @@ Three things it handles that are easy to miss:
 A tunnel gives you TLS, no inbound firewall hole, and a URL you revoke by killing
 one process. If you bind a non-loopback address directly instead, the server
 starts but prints a loud warning — it does not pretend that is supported.
+
+The deployment scripts in this section require macOS. They use `launchd` and
+`caffeinate`. They do not install Windows services.
 
 Once public, **the bearer token is the only thing between the internet and the
 archive.** Rotate it with `npm run wa -- http-token` (restart the server after),
@@ -371,10 +399,13 @@ search result. Every tool response fences message content in an explicit boundar
 labelled as data, with a random id so quoted text cannot forge an early close.
 That is a mitigation, not a guarantee — which is exactly why read-only matters.
 
-**The archive is as sensitive as your phone.** `~/.whatmcp/` holds nine years of
-messages from everyone who ever wrote to you, in plain SQLite. The directory is
-forced to 0700 and config, archive, OAuth and SQLite sidecar files to 0600, but the
-data is not encrypted at rest beyond FileVault.
+**The archive contains private messages in plain SQLite.** WhatMCP requests mode
+0700 for its data directory and 0600 for its config and database files. On
+Windows, these modes do not restrict access by user or group; use Windows folder
+permissions to protect the data directory. See [Node.js file permission
+behavior](https://nodejs.org/docs/latest-v22.x/api/fs.html#fschmodpath-mode-callback).
+WhatMCP does not encrypt the archive. Disk encryption is managed by the operating
+system.
 
 ## Layout
 
@@ -407,10 +438,11 @@ src/
   protobuf, so names come from push names plus a cross-reference against DM
   sessions. ~1,900 messages are from senders with no recoverable name and appear
   under their raw `@lid`.
-- **Coverage is whatever WhatsApp Desktop has synced,** which is not necessarily
-  everything on your phone.
+- **Coverage depends on the source database.** The macOS Desktop database may
+  contain less history than the phone. A file import adds only the messages
+  present in that file.
 - **Incremental sync catches inserts, not deletes** — by design. Run
   `npm run wa -- index --full` to pick up edits.
-- **Sync is manual.** Nothing runs in the background; the archive is exactly as
-  fresh as your last `npm run sync` or `sync_archive` call. Every tool reports how
-  far behind it is rather than letting stale results pass as current.
+- **File imports are snapshots.** Sync reads the configured source file; it does
+  not fetch new messages from a phone or decrypt backups. Import a newer file
+  to add more history. On macOS, scheduled sync can read the live Desktop store.
