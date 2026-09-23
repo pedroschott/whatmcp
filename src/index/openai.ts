@@ -93,6 +93,9 @@ export function redact(s: string): string {
   return s.replace(/sk-[A-Za-z0-9_\-]{8,}/g, 'sk-***');
 }
 
+/** Only this input-specific failure may be isolated and deferred by the indexer. */
+export class InputTooLongError extends Error {}
+
 async function post(cfg: EmbedConfig, input: string[], signal?: AbortSignal) {
   let res: Response;
   try {
@@ -122,6 +125,18 @@ async function post(cfg: EmbedConfig, input: string[], signal?: AbortSignal) {
   }
   if (!res.ok) {
     const body = await res.text();
+    if (res.status === 400) {
+      try {
+        const error = JSON.parse(body)?.error;
+        if (error?.type === 'invalid_request_error' &&
+            typeof error.message === 'string' &&
+            /maximum (?:input|context) length is \d+ tokens/i.test(error.message)) {
+          throw new InputTooLongError('Embedding input exceeds the model token limit.');
+        }
+      } catch (e) {
+        if (e instanceof InputTooLongError) throw e;
+      }
+    }
     if (res.status === 401) {
       throw new Error(
         'OpenAI rejected the API key (401). Replace it with:  npm run wa -- set-key',

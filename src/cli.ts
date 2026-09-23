@@ -55,12 +55,13 @@ function onProgress(e: ProgressEvent) {
     process.stdout.write(`\r  ${e.done}/${e.pending}  ${e.rate}/s${eta}      `);
   } else if (e.phase === 'warn') {
     console.log(`\n  warn: ${e.code} ${e.detail}`);
-  } else if (e.phase === 'done' && e.embedded > 0) {
+  } else if (e.phase === 'done' && (e.embedded > 0 || e.failed > 0)) {
     process.stdout.write('\r');
     console.log(
       `  embedded ${e.embedded} in ${(e.elapsedMs / 1000).toFixed(1)}s, ` +
         `${e.tokens.toLocaleString()} tokens, $${e.costUSD.toFixed(4)}` +
-        (e.truncated ? `  (${e.truncated} truncated)` : ''),
+        (e.truncated ? `  (${e.truncated} truncated)` : '') +
+        (e.failed ? `\n  ${e.failed} oversized window(s) left pending for a future run.` : ''),
     );
   }
 }

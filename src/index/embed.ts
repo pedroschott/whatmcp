@@ -15,7 +15,7 @@ import { openStore, type DB } from '../db/index.ts';
 import { windowHash } from './chunker.ts';
 import {
   embed as apiEmbed, splitBatches, modelTag, estimateTokens,
-  estimateCostUSD, MAX_TOKENS_PER_INPUT, type EmbedConfig,
+  estimateCostUSD, MAX_TOKENS_PER_INPUT, InputTooLongError, type EmbedConfig,
 } from './openai.ts';
 
 // The archive is written and read on the same machine, but a byte-swapped
@@ -36,7 +36,7 @@ export type ProgressEvent =
   | { phase: 'progress'; done: number; pending: number; rate: number; etaMs: number;
       tokens: number }
   | { phase: 'warn'; code: string; detail: string }
-  | { phase: 'done'; embedded: number; skipped: number; truncated: number;
+  | { phase: 'done'; embedded: number; skipped: number; failed: number; truncated: number;
       tokens: number; costUSD: number; elapsedMs: number };
 
 export interface EmbedOptions {
@@ -49,6 +49,8 @@ export interface EmbedOptions {
 
 export interface EmbedResult {
   embedded: number;
+  /** Oversized windows left without vectors so a later run retries them. */
+  failed: number;
   skipped: number;
   pending: number;
   truncated: number;
@@ -155,10 +157,10 @@ export async function embedMissing(
 
     if (pending.length === 0) {
       const res = {
-        embedded: 0, skipped: total, pending: 0, truncated: 0,
+        embedded: 0, failed: 0, skipped: total, pending: 0, truncated: 0,
         tokens: 0, costUSD: 0, elapsedMs: Date.now() - t0,
       };
-      emit({ phase: 'done', embedded: 0, skipped: total, truncated: 0,
+      emit({ phase: 'done', embedded: 0, failed: 0, skipped: total, truncated: 0,
              tokens: 0, costUSD: 0, elapsedMs: res.elapsedMs });
       return res;
     }
@@ -170,10 +172,51 @@ export async function embedMissing(
     `);
 
     let embedded = 0;
+    let failed = 0;
     let truncated = 0;
     let tokens = 0;
     let lastEmit = 0;
     const rateWindow: { at: number; done: number }[] = [{ at: Date.now(), done: 0 }];
+
+    // Split rejected batches until the oversized window is isolated. Persist each
+    // successful subset immediately; never write a placeholder vector for failures.
+    const processBatch = async (rows: { hash: string; text: string }[], texts: string[]): Promise<void> => {
+      opts.signal?.throwIfAborted();
+      let result: Awaited<ReturnType<typeof apiEmbed>>;
+      try {
+        result = await apiEmbed(cfg, texts, { signal: opts.signal });
+      } catch (e) {
+        if (!(e instanceof InputTooLongError)) throw e;
+        if (texts.length > 1) {
+          const mid = Math.floor(texts.length / 2);
+          await processBatch(rows.slice(0, mid), texts.slice(0, mid));
+          await processBatch(rows.slice(mid), texts.slice(mid));
+        } else {
+          failed++;
+          emit({ phase: 'warn', code: 'input_too_long',
+            detail: `window ${rows[0].hash} left pending; continuing with other windows` });
+        }
+        return;
+      }
+      tokens += result.tokens;
+      let batchTruncated = 0;
+      db.exec('BEGIN');
+      try {
+        const now = Math.floor(Date.now() / 1000);
+        for (let j = 0; j < rows.length; j++) {
+          const src = rows[j];
+          const isTrunc = estimateTokens(src.text) > MAX_TOKENS_PER_INPUT ? 1 : 0;
+          batchTruncated += isTrunc;
+          ins.run(src.hash, tag, cfg.dimensions, isTrunc, now, packVector(result.vectors[j]));
+        }
+        db.exec('COMMIT');
+      } catch (e) {
+        db.exec('ROLLBACK');
+        throw e;
+      }
+      embedded += rows.length;
+      truncated += batchTruncated;
+    };
 
     for (let i = 0; i < pending.length; i += batchSize) {
       if (opts.signal?.aborted) break;
@@ -185,27 +228,8 @@ export async function embedMissing(
 
       let offset = 0;
       for (const batch of batches) {
-        const { vectors, tokens: used } = await apiEmbed(cfg, batch.texts, {
-          signal: opts.signal,
-        });
-        tokens += used;
-
-        db.exec('BEGIN');
-        try {
-          const now = Math.floor(Date.now() / 1000);
-          for (let j = 0; j < batch.texts.length; j++) {
-            const src = slice[offset + j];
-            const isTrunc = estimateTokens(src.text) > MAX_TOKENS_PER_INPUT ? 1 : 0;
-            truncated += isTrunc;
-            ins.run(src.hash, tag, cfg.dimensions, isTrunc, now, packVector(vectors[j]));
-          }
-          db.exec('COMMIT');
-        } catch (e) {
-          db.exec('ROLLBACK');
-          throw e;
-        }
+        await processBatch(slice.slice(offset, offset + batch.texts.length), batch.texts);
         offset += batch.texts.length;
-        embedded += batch.texts.length;
       }
 
       // Rate over a trailing window. A cumulative rate is dominated by the first
@@ -216,14 +240,14 @@ export async function embedMissing(
       const spanDone = rateWindow[rateWindow.length - 1].done - rateWindow[0].done;
       const rate = span > 0 ? (spanDone / span) * 1000 : 0;
 
-      if (Date.now() - lastEmit >= 250 || embedded >= pending.length) {
+      if (Date.now() - lastEmit >= 250 || embedded + failed >= pending.length) {
         lastEmit = Date.now();
         emit({
           phase: 'progress',
           done: embedded,
           pending: pending.length,
           rate: Number(rate.toFixed(1)),
-          etaMs: rate > 0 ? Math.round(((pending.length - embedded) / rate) * 1000) : 0,
+          etaMs: rate > 0 ? Math.round(((pending.length - embedded - failed) / rate) * 1000) : 0,
           tokens,
         });
       }
@@ -232,6 +256,7 @@ export async function embedMissing(
     const costUSD = estimateCostUSD(cfg.model, tokens);
     const res = {
       embedded,
+      failed,
       skipped: total - embedded,
       pending: pending.length - embedded,
       truncated,
@@ -240,7 +265,7 @@ export async function embedMissing(
       elapsedMs: Date.now() - t0,
     };
     emit({
-      phase: 'done', embedded, skipped: res.skipped, truncated,
+      phase: 'done', embedded, failed, skipped: res.skipped, truncated,
       tokens, costUSD, elapsedMs: res.elapsedMs,
     });
     return res;
