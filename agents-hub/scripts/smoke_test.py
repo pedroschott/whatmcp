@@ -176,6 +176,12 @@ if LOGS:
     check(st == 200 and "/v1/tasks/claim" in t, "GET /v1/logs/requests shows the request audit log")
     st, _, _ = raw("GET", "/v1/logs", token=a.token)
     check(st == 403, "agent tokens cannot read operator logs (403)")
+    st, _, t = raw("GET", "/v1/agents", token=LOGS)
+    check(st == 200 and "smoke-a-" + RUN in t, "logs key can read the roster (inspector UI)")
+    st, _, _ = raw("POST", "/v1/messages", {"body": "x"}, token=LOGS)
+    check(st == 401, "logs key cannot write (401)")
+    st, h, t = raw("GET", "/ui")
+    check(st == 200 and "agents-hub inspector" in t and "default-src 'none'" in (h.get("Content-Security-Policy") or ""), "GET /ui serves the inspector with a strict CSP")
 
 # --- cleanup ---
 if ADMIN:

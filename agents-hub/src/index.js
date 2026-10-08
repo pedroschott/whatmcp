@@ -5,6 +5,7 @@
 import { docsMarkdown, openapiSpec } from "./docs.js";
 import PY_CLIENT from "../client/hub_client.py";
 import { LIMITS, VERSION } from "./config.js";
+import { UI_HTML } from "./ui.js";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -261,9 +262,14 @@ function bearer(req) {
 // One write does authentication, presence and per-agent rate limiting.
 const REQUEST_PRINCIPAL = new WeakMap();
 
-async function authenticate(req, env, now, { allowAdmin = false, adminOnly = false } = {}) {
+async function authenticate(req, env, now, { allowAdmin = false, adminOnly = false, allowViewer = false } = {}) {
   const tok = bearer(req);
   if (!tok) throw new HttpError(401, "unauthorized", "missing 'Authorization: Bearer <token>' header");
+  // The read-only logs key may read (roster, status, tasks), never write.
+  if (allowViewer && env.LOGS_KEY && (await safeEqual(tok, env.LOGS_KEY))) {
+    REQUEST_PRINCIPAL.set(req, { id: "viewer", name: "viewer" });
+    return { id: "viewer", name: "viewer", viewer: true, capabilities: "[]" };
+  }
   if (env.ADMIN_TOKEN && (await safeEqual(tok, env.ADMIN_TOKEN))) {
     REQUEST_PRINCIPAL.set(req, { id: ADMIN_ID, name: ADMIN_ID });
     if (allowAdmin || adminOnly) return { id: ADMIN_ID, name: ADMIN_ID, admin: true, capabilities: "[]" };
@@ -888,6 +894,16 @@ async function route(req, env, ctx) {
       });
     }
     if (path === "/client.py") return text(PY_CLIENT, "text/x-python; charset=utf-8");
+    if (path === "/ui") {
+      return new Response(UI_HTML, {
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store",
+          "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+          ...SECURITY_HEADERS,
+        },
+      });
+    }
     if (path === "/v1/health") return json(200, { ok: true, service: "agents-hub", version: VERSION, server_time: iso(now) });
     if (path === "/favicon.ico" || path === "/robots.txt") return new Response(path === "/robots.txt" ? "User-agent: *\nDisallow: /v1/\n" : null, { status: path === "/robots.txt" ? 200 : 204 });
   }
@@ -917,7 +933,7 @@ async function route(req, env, ctx) {
   }
 
   const key = `${m} /${parts.slice(1).join("/")}`;
-  const readOnly = { allowAdmin: true };
+  const readOnly = { allowAdmin: true, allowViewer: true };
 
   if (key === "GET /me") {
     const me = await authenticate(req, env, now);
