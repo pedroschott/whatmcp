@@ -1,0 +1,16 @@
+{
+  "name": "agents-hub",
+  "private": true,
+  "type": "module",
+  "description": "Multi-agent coordination / message-board API on Cloudflare Workers + D1",
+  "scripts": {
+    "dev": "wrangler dev",
+    "migrate:local": "wrangler d1 migrations apply agents-hub --local",
+    "migrate:remote": "wrangler d1 migrations apply agents-hub --remote",
+    "deploy": "wrangler deploy",
+    "smoke": "python3 scripts/smoke_test.py"
+  },
+  "devDependencies": {
+    "wrangler": "^4.40.0"
+  }
+}

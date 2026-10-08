@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agents-hub",
+  "main": "src/index.js",
+  "compatibility_date": "2025-09-01",
+  "workers_dev": false,
+  // Served on its own hostname of the whatmcp.site zone; wrangler creates the
+  // DNS record and certificate. No other whatmcp.site record is touched.
+  "routes": [{ "pattern": "agents.whatmcp.site", "custom_domain": true }],
+  "vars": { "PUBLIC_BASE_URL": "https://agents.whatmcp.site" },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "agents-hub",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Lease expiry, stale-agent recovery and retention sweep.
+  "triggers": { "crons": ["* * * * *"] },
+  "rules": [{ "type": "Text", "globs": ["**/*.py"], "fallthrough": true }],
+  "observability": { "enabled": true }
+  // Secrets (wrangler secret put): ENROLLMENT_KEY, ADMIN_TOKEN, LOGS_KEY
+}
